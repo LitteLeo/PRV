@@ -26,8 +26,17 @@
 
 - `VLLM_LLM_MODEL`：模型路径（默认 REAP-all-lora）
 - `USE_PRV_RERANK`：`true` / `false`，是否启用重排
+- `MAX_DOCUMENT_CHARS`：送入事实提取的文档总字符数上限（默认 24000，约 6k tokens，预留其余给 prompt/query）。设为 `0` 表示不截断。见下「超出模型上下文」说明。
 
 其他配置见 `config.py` 及根目录 `PRV框架设计说明.md`。
+
+## 超出模型上下文与当前处理方式
+
+当 Top-N 较大（如 200/300/500）时，拼接后的文档可能超过模型上下文（如 LLaMA3-8B 的 8192 tokens）。
+
+- **当前实现（顺序截断）**：在重排之后、事实提取之前，对文档列表按 **字符数上限** 做截断：只保留前若干条，使格式化后的总长度 ≤ `MAX_DOCUMENT_CHARS`（默认 24000 字符，约 6k tokens），避免单次调用 LLM 时超出上下文。逻辑在 `core._truncate_hits_to_fit_context`，在 `retrieve_and_extract_facts` 与 `extract_facts_given_hits` 以及评测单轮路径中统一使用。
+- **未实现**：真正的 **滑动窗口**（将文档分成多段，每段分别做事实提取再合并）尚未实现；若需严格复刻「Sun et al. 滑动窗口」，需在 FE 前对文档做分块、多次调用 extract_facts 并合并 `reasoned_facts`。
+- **重排阶段**：重排器当前仍接收完整 Top-N 文档列表；若 N 极大导致重排 prompt 超长，需在重排前对文档做截断或分块（可复用 `MAX_DOCUMENT_CHARS` 或单独配置）。
 
 ## 与 DynamicRAG 同数据集的分数验证（不走 E5）
 

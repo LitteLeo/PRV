@@ -10,9 +10,10 @@ BASE="$(cd "$(dirname "$0")/.." && pwd)"
 DATA_DIR="${DATA_DIR:-/home/lfy/data/eval_data}"
 # DynamicRAG 目录（用于调用 evaluate.py）
 DYNAMICRAG_DIR="${DYNAMICRAG_DIR:-$(cd "$BASE/../DynamicRAG" 2>/dev/null && pwd)}"
-OUT_DIR="${OUT_DIR:-$BASE/results}"
-LOG_DIR="${LOG_DIR:-$BASE/logs}"
+# 实验根目录：所有正式结果与日志放在代码仓库外，避免更新代码时被删除
 EXP_DIR="${EXP_DIR:-$BASE/../experiments/PRV}"
+OUT_DIR="${OUT_DIR:-$EXP_DIR/results}"
+LOG_DIR="${LOG_DIR:-$EXP_DIR/logs}"
 
 mkdir -p "$OUT_DIR" "$LOG_DIR" "$EXP_DIR"
 
@@ -21,7 +22,8 @@ VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
 VLLM_PORT="${VLLM_PORT:-8000}"
 if ! curl -sf --connect-timeout 3 "http://${VLLM_HOST}:${VLLM_PORT}/v1/models" >/dev/null 2>&1; then
   echo "Error: vLLM not reachable at http://${VLLM_HOST}:${VLLM_PORT}"
-  echo "Start the model first: vllm serve /home/lfy/projects/models/REAP-all-lora --host 0.0.0.0 --port ${VLLM_PORT}"
+  echo "Start the model first: vllm serve /path/to/REAP-all-merged --host 0.0.0.0 --port ${VLLM_PORT}"
+  echo "Then set: export VLLM_LLM_MODEL=/path/to/REAP-all-merged  # 必须与 vLLM 加载的模型一致，否则 404"
   exit 1
 fi
 echo "vLLM OK at http://${VLLM_HOST}:${VLLM_PORT}"

@@ -123,6 +123,22 @@ USER_PROMPT_FACT_EXTRACTION = """
 """
 
 
+# ========== 事实提取（无验证约束 / 消融用）==========
+# 仅产出自由文本结论，不要求 direct_evidence / fulfillment_level
+SYSTEM_PROMPT_FACT_EXTRACTION_NO_VERIFICATION = """
+You are a concise extractor. Given the active requirement and retrieved documents, output a single brief conclusion that answers or addresses the requirement. Do NOT output evidence quotes or fulfillment labels.
+
+**Output:** A single valid JSON object with one key: `reasoned_facts`.
+- `reasoned_facts` (list): Exactly one object with:
+  - `statement` (string): Your brief conclusion in 1-3 sentences. No evidence quotes, no labels.
+  - `fulfills_requirement_id` (string): The `id` from the active_requirement (e.g. "req1").
+
+Example: {"reasoned_facts": [{"statement": "The song was released in 2023.", "fulfills_requirement_id": "req1"}]}
+
+Your entire output must be valid JSON only. No other text.
+"""
+
+
 # ========== 计划更新提示词（用于阶段2.3：Plan Updater子模块）==========
 # 功能：当lₜ=DirectAnswer时，指导LLM执行事实替换和计划分叉
 # 对应函数：update_plan
@@ -208,11 +224,13 @@ You are a master "AI Strategy and Dynamic Planning Engine". You are a pragmatic 
 3.  **Step 3: Formulate a Scoped Recovery Strategy (If Needed):**
     *   **This step is only executed if you determined the partial clue was NOT sufficient in Step 2.**
     *   Diagnose the problem's scope (`Localized Issue` vs. `Systemic Flaw`) and decide on the appropriate intervention: `Minor Adjustment` (refining a query) or `Major Overhaul` (pruning & injecting).
+    *   **Recovery rule for FAILED_EXTRACT:** For any requirement that returned `FAILED_EXTRACT` (no fact could be extracted from the given evidence), you MUST give it at least one retry before giving up. Add it to `next_actions` with a **rephrased search query** (e.g. different keywords: simplify "Stella's Oorlog" to "Stella Oorlog", add "film"/"release"/"year", alternate spellings). Evidence may exist in the documents but rank low under the original query; a rephrased query can surface it. Only after such a retry may you later choose `SYNTHESIZE_ANSWER` for that requirement.
 
 4.  **Step 4: Construct and Finalize the New, Actionable Plan:**
     *   Based on your decisions from the previous steps, construct the `updated_plan`.
     *   **Crucially, every `question` you write or refine in this new plan MUST follow the 'Art of Crafting Effective Search Queries' principle.**
     *   If you deemed a partial clue sufficient in Step 2, the `updated_plan` should reflect this by treating the requirement as solved and advancing the plan.
+    *   **Before choosing SYNTHESIZE_ANSWER:** Ensure every requirement that got `FAILED_EXTRACT` has at least one corresponding entry in `next_actions` with a **rephrased** `question` for a retry, unless you have already retried it in a prior round.
     *   Perform a final check: Is the new plan complete (ready for `SYNTHESIZE_ANSWER`) or does it require more searching?
     *   Derive the `next_actions` from your `updated_plan`, ensuring they follow the **Rule of Coherency**.
     *   For the requirement whose dependencies are now met by the `collected_facts`, you MUST create a corresponding entry in the `next_actions` list.
@@ -249,7 +267,7 @@ USER_PROMPT_CONDITION_REPLAN = """
 # 功能：指导LLM基于最终事实列表F_final合成最终答案A
 # 对应函数：synthesize_final_answer
 # 对应公式：A = M_θ(Synthesize | Q, F_final) （公式4）
-# 输出格式：简洁的最终答案文本
+# 输出格式：简洁的最终答案文本（通用问答）
 
 SYSTEM_PROMPT_FINAL_ANSWER = """
 You are an "Answer Synthesizer" AI. Your sole purpose is to generate a final, concise answer to the user's original question based on a set of verified, collected facts.
@@ -272,6 +290,54 @@ USER_PROMPT_FINAL_ANSWER = """
 
 **Collected Facts:**
 {facts}
+"""
+
+# ========== FEVER 专用答案合成提示词（输出 SUPPORTS / REFUTES / NOT ENOUGH INFO）==========
+# 功能：针对 FEVER 任务，将事实列表映射为标准标签，便于 evaluate.py 使用 accuracy 评估
+
+SYSTEM_PROMPT_FINAL_ANSWER_FEVER = """
+You are a strict fact-checking classifier for the FEVER dataset.
+
+Your goal is to classify a given natural language claim into EXACTLY one of three labels:
+- SUPPORTS
+- REFUTES
+- NOT ENOUGH INFO
+
+You will be given:
+- The original natural language claim (the user's question)
+- A set of collected, structured facts extracted from evidence documents
+
+Your classification rules:
+1. SUPPORTS:
+   - The collected facts clearly and directly support the claim as written.
+   - There is no major contradiction in the evidence.
+2. REFUTES:
+   - The collected facts clearly contradict the claim.
+   - Or they show the claim is factually wrong.
+3. NOT ENOUGH INFO:
+   - The collected facts are insufficient to determine whether the claim is true or false.
+   - The evidence is incomplete, ambiguous, or unrelated.
+
+Crucial output rules:
+- You MUST output ONLY ONE of the following tokens as your final answer:
+  SUPPORTS
+  REFUTES
+  NOT ENOUGH INFO
+- Do NOT output any explanations, reasoning, or additional text.
+- Do NOT include quotes, punctuation, or lowercase variants; use the labels exactly as written above.
+"""
+
+USER_PROMPT_FINAL_ANSWER_FEVER = """
+Original Claim (FEVER question):
+{query}
+
+Collected Facts (structured evidence summary):
+{facts}
+
+Classify the claim into EXACTLY one of:
+- SUPPORTS
+- REFUTES
+- NOT ENOUGH INFO
 """
 
 # ========== PRV 重排提示词（召回后文档选择，与 DynamicRAG 对齐）==========

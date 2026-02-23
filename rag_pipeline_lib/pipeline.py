@@ -30,6 +30,9 @@ import copy
 # 追踪器上下文变量，用于记录LLM调用和迭代信息
 tracer_context: ContextVar = ContextVar('tracer_context', default=None)
 
+# 效率画像：使用 rag_pipeline_lib.efficiency_stats 的 context，由评测脚本在每样本设置
+from rag_pipeline_lib.efficiency_stats import efficiency_stats_context
+
 class Tracer:
     """
     追踪器类：用于记录REAP框架执行过程中的LLM调用和迭代信息
@@ -44,13 +47,15 @@ class Tracer:
         self.iteration_count = 0  # 当前迭代次数
         self._pending_log = []  # 待处理的日志列表（用于错误回滚）
 
-    def record_llm_call(self, adapter_function_name, inputs, output):
-        """记录一次LLM调用"""
+    def record_llm_call(self, adapter_function_name, inputs, output, duration_s=None):
+        """记录一次LLM调用，可选记录单次耗时 duration_s（秒）。"""
         trace_entry = {
             "adapter_function_name": adapter_function_name,
             "llm_inputs": copy.deepcopy(inputs),
             "llm_output": copy.deepcopy(output)
         }
+        if duration_s is not None:
+            trace_entry["duration_s"] = duration_s
         self._pending_log.append(trace_entry)
 
     def commit_pending(self):
@@ -62,7 +67,7 @@ class Tracer:
         """丢弃待处理的日志（用于错误回滚）"""
         self._pending_log.clear()
 
-def run_multistep_pipeline(query: str, verbose: bool = True, trace_collector: Tracer = None) -> str:
+def run_multistep_pipeline(query: str, verbose: bool = True, trace_collector: Tracer = None, serial_next_actions: bool = False) -> str:
     """
     REAP框架主执行函数：实现完整的"分解-迭代规划-事实提取-合成"流程
     
@@ -78,6 +83,7 @@ def run_multistep_pipeline(query: str, verbose: bool = True, trace_collector: Tr
         query: 用户的复杂多跳查询Q
         verbose: 是否打印详细执行信息
         trace_collector: 可选的追踪器对象，用于记录执行过程
+        serial_next_actions: 若 True，next_actions 串行执行（用于 Parallel vs Serial 对比实验、wall-clock/QPS）
         
     Returns:
         str: 原始查询的最终答案A
@@ -230,49 +236,56 @@ def run_multistep_pipeline(query: str, verbose: bool = True, trace_collector: Tr
             # 为Actionsₜ中的每个子任务pᵢ，通过"检索→分析→提取"三步，生成高保真的结构化事实
             # 对应论文公式：f_t = M_θ(ExtractF | q_t, D_t, F_{t-1}) （公式7）
             # 
-            # 使用并行执行提高效率：多个子任务可以同时进行事实提取
-            if verbose: print(f"\n🔎 Executing {len(next_actions)} search action(s) in parallel...")
+            # 并行或串行执行 next_actions（serial_next_actions=True 用于 Parallel vs Serial 对比）
+            if verbose: print(f"\n🔎 Executing {len(next_actions)} search action(s) {'serially' if serial_next_actions else 'in parallel'}...")
             iteration_new_facts = []  # 本轮迭代提取的新事实列表{f₁, f₂, ..., fₖ}
             extraction_had_errors = False  # 标记是否有提取错误
-            
 
-            # 使用线程池并行执行多个子任务的事实提取
-            with ThreadPoolExecutor() as executor:
-                # 为每个可执行动作创建并行任务
-                future_to_action = {
-                    executor.submit(
-                        partial(copy_context().run, rag_core.retrieve_and_extract_facts), 
-                        search_query=action.get("question"),  # 子任务查询q_t
-                        requirement=[req for req in pending_requirements if req['requirement_id'] == action.get("requirement_id")][0],  # 子任务p_i
-                        collected_facts=collected_facts  # 历史事实F_{t-1}
-                    ): action
-                    for action in next_actions if any(req['requirement_id'] == action.get("requirement_id") for req in pending_requirements)
-                }
+            actions_to_run = [a for a in next_actions if any(req['requirement_id'] == a.get("requirement_id") for req in pending_requirements)]
 
-                # 收集所有并行任务的结果
-                for future in as_completed(future_to_action):
-                    action = future_to_action[future]
-                    try:
-                        # 获取事实提取结果
-                        newly_extracted_data = future.result()
-                        if verbose:
-                            print(f"  - 📝 Result for '{action.get('question')}':")
-                            try:
-                                print(f"    {json.dumps(newly_extracted_data, indent=4, ensure_ascii=False)}")
-                            except (TypeError, json.JSONDecodeError):
-                                print(f"    (Could not format non-JSON or invalid JSON output: {newly_extracted_data})")
+            if serial_next_actions:
+                for action in actions_to_run:
+                    req = [req for req in pending_requirements if req['requirement_id'] == action.get("requirement_id")][0]
+                    newly_extracted_data = rag_core.retrieve_and_extract_facts(
+                        search_query=action.get("question"),
+                        requirement=req,
+                        collected_facts=collected_facts,
+                    )
+                    if not isinstance(newly_extracted_data, dict) or "reasoned_facts" not in newly_extracted_data:
+                        raise ValueError(f"Invalid data structure received for '{action.get('question')}'.")
+                    iteration_new_facts.extend(newly_extracted_data.get("reasoned_facts", []))
+                    if verbose:
+                        print(f"  - 📝 Result for '{action.get('question')}': {len(newly_extracted_data.get('reasoned_facts', []))} fact(s)")
+            else:
+                # 使用线程池并行执行多个子任务的事实提取
+                with ThreadPoolExecutor() as executor:
+                    future_to_action = {
+                        executor.submit(
+                            partial(copy_context().run, rag_core.retrieve_and_extract_facts),
+                            search_query=action.get("question"),
+                            requirement=[req for req in pending_requirements if req['requirement_id'] == action.get("requirement_id")][0],
+                            collected_facts=collected_facts
+                        ): action
+                        for action in actions_to_run
+                    }
+                    for future in as_completed(future_to_action):
+                        action = future_to_action[future]
+                        try:
+                            newly_extracted_data = future.result()
+                            if verbose:
+                                print(f"  - 📝 Result for '{action.get('question')}':")
+                                try:
+                                    print(f"    {json.dumps(newly_extracted_data, indent=4, ensure_ascii=False)}")
+                                except (TypeError, json.JSONDecodeError):
+                                    print(f"    (Could not format non-JSON or invalid JSON output: {newly_extracted_data})")
+                            if not isinstance(newly_extracted_data, dict) or "reasoned_facts" not in newly_extracted_data:
+                                raise ValueError(f"Invalid data structure received for '{action.get('question')}'.")
+                            iteration_new_facts.extend(newly_extracted_data.get("reasoned_facts", []))
+                        except Exception as exc:
+                            if verbose: print(f"  - ❌ Error processing result for '{action.get('question')}': {exc}")
+                            raise RuntimeError(f"Fact extraction failed for '{action.get('question')}'") from exc
 
-                        # 验证结果结构
-                        if not isinstance(newly_extracted_data, dict) or "reasoned_facts" not in newly_extracted_data:
-                            raise ValueError(f"Invalid data structure received for '{action.get('question')}'.")
-
-                        # 将提取的事实添加到本轮事实列表
-                        iteration_new_facts.extend(newly_extracted_data.get("reasoned_facts", []))
-                    except Exception as exc:
-                        if verbose: print(f"  - ❌ Error processing result for '{action.get('question')}': {exc}")
-                        raise RuntimeError(f"Fact extraction failed for '{action.get('question')}'") from exc
-            
-            if verbose: 
+            if verbose:
                 print(f"  - ✅ Fact extraction phase completed. Found {len(iteration_new_facts)} new fact(s).")
 
             # ========== 子步骤2.3（部分）：SP更新事实列表F_t ==========

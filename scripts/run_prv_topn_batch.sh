@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# PRV Top-N 实验：自变量为检索器返回文档数 Top-N（50/100/150/200/300/500）+ Zero-Shot baseline。
+# 评估数据集：NQ、HotpotQA、ASQA；每数据集抽样 50 条（seed 42）；每条件重复 3 次。结果存到 experiments/PRV/topn_8b_v2_<timestamp>/results
+# 注意：Top-200/300/500 可能超出模型上下文，后续可加滑动窗口（见 PRV 框架设计说明）。
+set -euo pipefail
+
+BASE="$(cd "$(dirname "$0")/.." && pwd)"
+DATA_DIR="${DATA_DIR:-/home/lfy/data/eval_data}"
+EXP_BASE="${EXP_BASE:-/home/lfy/experiments/PRV}"
+ts="$(date +%Y%m%d_%H%M)"
+RUN_DIR="${EXP_BASE}/topn_8b_v2_${ts}"
+OUT_DIR="${RUN_DIR}/results"
+LOG_DIR="${RUN_DIR}/logs"
+mkdir -p "$OUT_DIR" "$LOG_DIR"
+
+echo "OUT_DIR=$OUT_DIR"
+echo "LOG_DIR=$LOG_DIR"
+
+VLLM_HOST="${VLLM_HOST:-127.0.0.1}"
+VLLM_PORT="${VLLM_PORT:-8000}"
+if ! curl -sf --connect-timeout 3 "http://${VLLM_HOST}:${VLLM_PORT}/v1/models" >/dev/null 2>&1; then
+  echo "Warning: vLLM not reachable at http://${VLLM_HOST}:${VLLM_PORT}. Continue anyway."
+else
+  echo "vLLM OK at http://${VLLM_HOST}:${VLLM_PORT}"
+fi
+
+# 3 个代表性 benchmark（与实验设置一致）
+DATASETS=( "nq.jsonl" "hotpotqa.jsonl" "asqa_eval_gtr_top100.jsonl" )
+TOP_N_LIST=( 50 100 150 200 300 500 )
+NUM_RUNS=3
+SAMPLE_ARGS="--sample-size 50 --shuffle --seed 42"
+
+for f in "${DATASETS[@]}"; do
+  IN="${DATA_DIR}/${f}"
+  base="${f%.jsonl}"
+  if [ ! -f "$IN" ]; then
+    echo "[WARN] missing $IN, skip."
+    continue
+  fi
+
+  # --- Zero-Shot（无检索），重复 3 次
+  for run in $(seq 1 "$NUM_RUNS"); do
+    OUT="${OUT_DIR}/prv_8b_v2_${base}_zeroshot_run${run}.json"
+    LOG="${LOG_DIR}/prv_8b_v2_${base}_zeroshot_run${run}.log"
+    echo "[RUN] $base zeroshot run$run"
+    python "$BASE/evaluation/run_prv_eval.py" \
+      --input-jsonl "$IN" \
+      --output-json "$OUT" \
+      --zero-shot \
+      $SAMPLE_ARGS \
+      2>&1 | tee -a "$LOG"
+    [ "${PIPESTATUS[0]}" -eq 0 ] || exit 1
+  done
+
+  # --- Top-N：50, 100, 150, 200, 300, 500，每个重复 3 次（抽样 50 条）
+  for n in "${TOP_N_LIST[@]}"; do
+    for run in $(seq 1 "$NUM_RUNS"); do
+      OUT="${OUT_DIR}/prv_8b_v2_${base}_top${n}_run${run}.json"
+      LOG="${LOG_DIR}/prv_8b_v2_${base}_top${n}_run${run}.log"
+      echo "[RUN] $base top-$n run$run"
+      python "$BASE/evaluation/run_prv_eval.py" \
+        --input-jsonl "$IN" \
+        --output-json "$OUT" \
+        --eval-top-k "$n" \
+        --max-docs "$n" \
+        $SAMPLE_ARGS \
+        2>&1 | tee -a "$LOG"
+      [ "${PIPESTATUS[0]}" -eq 0 ] || exit 1
+    done
+  done
+done
+
+echo "[DONE] Top-N experiment results in $OUT_DIR"

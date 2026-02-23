@@ -19,7 +19,8 @@ VLLM_URL="http://${VLLM_HOST}:${VLLM_PORT}"
 if ! curl -sf --connect-timeout 3 "${VLLM_URL}/v1/models" >/dev/null 2>&1; then
   echo "Error: vLLM is not reachable at ${VLLM_URL}"
   echo "Please start the model server first, e.g.:"
-  echo "  vllm serve /home/lfy/projects/models/REAP-all-lora --host 0.0.0.0 --port ${VLLM_PORT}"
+  echo "  vllm serve /path/to/REAP-all-merged --host 0.0.0.0 --port ${VLLM_PORT}"
+  echo "  export VLLM_LLM_MODEL=/path/to/REAP-all-merged  # 与 vLLM 加载的模型一致"
   echo "Then run this script again."
   exit 1
 fi

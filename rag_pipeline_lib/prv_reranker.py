@@ -9,6 +9,12 @@ import config
 from rag_pipeline_lib import llm_adapter
 from typing import List, Dict, Any
 
+try:
+    from rag_pipeline_lib.efficiency_stats import get_efficiency_stats
+except ImportError:
+    def get_efficiency_stats():
+        return None
+
 
 def _search_hits_to_retrieved_content(search_hits: List[Dict[str, Any]]) -> str:
     """
@@ -68,7 +74,13 @@ def rerank_documents(query: str, search_hits: List[Dict[str, Any]]) -> List[Dict
     response_text = llm_adapter.rerank_documents(query, retrieved_content)
 
     ids = _parse_rerank_response(response_text, len(search_hits))
+    stats = get_efficiency_stats()
+    if stats is not None:
+        stats["parse_index_total"] = stats.get("parse_index_total", 0) + 1
+        if not ids:
+            stats["parse_index_fail"] = stats.get("parse_index_fail", 0) + 1
+            stats["failsafe_triggered"] = True
     if not ids:
-        # 解析为空或模型输出 None：保留原顺序，避免丢失文档
+        # 解析为空或模型输出 None：保留原顺序，避免丢失文档（fail-safe）
         return search_hits
     return [search_hits[i - 1] for i in ids]

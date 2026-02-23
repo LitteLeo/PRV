@@ -104,7 +104,11 @@ def vllm_analyze_query(query: str, llm_model_name: str = None) -> str:
 
 def vllm_extract_facts(query: str, active_requirement: str, retrieved_documents: str, known_facts: str, llm_model_name: str = None) -> str:
     """Extracts facts from the context that satisfy the given condition based on the query using VLLM."""
-    combined_instruction = f"{prompts.SYSTEM_PROMPT_FACT_EXTRACTION}\n{prompts.USER_PROMPT_FACT_EXTRACTION.format(query=query, active_requirement=active_requirement, known_facts=known_facts, retrieved_documents=retrieved_documents)}"
+    if getattr(config, "USE_VERIFICATION_CONSTRAINTS", True):
+        sys_prompt = prompts.SYSTEM_PROMPT_FACT_EXTRACTION
+    else:
+        sys_prompt = prompts.SYSTEM_PROMPT_FACT_EXTRACTION_NO_VERIFICATION
+    combined_instruction = f"{sys_prompt}\n{prompts.USER_PROMPT_FACT_EXTRACTION.format(query=query, active_requirement=active_requirement, known_facts=known_facts, retrieved_documents=retrieved_documents)}"
 
     try:
         client, model_to_use = configure_vllm_client(task_type="extract_facts")
@@ -225,6 +229,70 @@ def vllm_generate_final_answer(query: str, facts: str, llm_model_name: str = Non
     except Exception as e:
         print(f"Error calling VLLM ({llm_model_name}) to generate final answer: {e}")
         return f"Sorry, encountered an error when calling LLM to generate final answer: {e}"
+
+
+def vllm_generate_final_answer_fever(query: str, facts: str, llm_model_name: str = None) -> str:
+    """
+    FEVER 专用：基于 query 和事实列表生成 SUPPORTS / REFUTES / NOT ENOUGH INFO 三类标签之一。
+    使用 SYSTEM_PROMPT_FINAL_ANSWER_FEVER / USER_PROMPT_FINAL_ANSWER_FEVER 提示词。
+    """
+    combined_instruction = f"{prompts.SYSTEM_PROMPT_FINAL_ANSWER_FEVER}\n{prompts.USER_PROMPT_FINAL_ANSWER_FEVER.format(query=query, facts=facts)}"
+
+    try:
+        client, model_to_use = configure_vllm_client(task_type="generate_final_answer")
+        if llm_model_name is None:
+            llm_model_name = model_to_use
+        print(f"Calling VLLM ({llm_model_name}) to generate FEVER label...")
+        completion = client.chat.completions.create(
+            model=llm_model_name,
+            messages=[
+                {"role": "user", "content": combined_instruction}
+            ],
+            max_tokens=8,
+            temperature=0.0,
+        )
+        response_text = completion.choices[0].message.content
+        if not response_text:
+            return "EMPTY"
+        return response_text.strip()
+    except Exception as e:
+        print(f"Error calling VLLM ({llm_model_name}) to generate FEVER label: {e}")
+        return f"ERROR: {e}"
+
+
+def vllm_generate_final_answer_with_style(
+    query: str,
+    facts: str,
+    style_hint: str,
+    llm_model_name: str = None,
+) -> str:
+    """
+    根据 query + facts + 风格提示生成最终答案，用于 NQ / TriviaQA / PopQA / 2wikimqa /
+    HotpotQA / ASQA / ELI5 等任务特化（短短一句 / 段落）。
+    """
+    combined_instruction = (
+        f"{prompts.SYSTEM_PROMPT_FINAL_ANSWER}\n"
+        f"Instruction: {style_hint}\n"
+        f"{prompts.USER_PROMPT_FINAL_ANSWER.format(query=query, facts=facts)}"
+    )
+
+    try:
+        client, model_to_use = configure_vllm_client(task_type="generate_final_answer")
+        if llm_model_name is None:
+            llm_model_name = model_to_use
+        print(f"Calling VLLM ({llm_model_name}) to generate final answer with style hint...")
+        completion = client.chat.completions.create(
+            model=llm_model_name,
+            messages=[{"role": "user", "content": combined_instruction}],
+            temperature=0.2,
+        )
+        response_text = completion.choices[0].message.content
+        if not response_text:
+            return "Empty final answer response received from VLLM API."
+        return response_text.strip()
+    except Exception as e:
+        print(f"Error calling VLLM ({llm_model_name}) to generate final answer with style: {e}")
+        return f"Sorry, encountered an error when calling LLM to generate final answer with style: {e}"
 
 def vllm_evaluate_answer(question: str, golden_answer: str, predicted_answer: str, llm_model_name: str = None) -> str:
     """

@@ -81,6 +81,7 @@ def openai_analyze_query(query: str, llm_model_name: str = config.LLM_MODEL_NAME
 def openai_extract_facts(query: str, active_requirement: str, retrieved_documents: str,  known_facts: str, llm_model_name: str = config.LLM_MODEL_NAME) -> str:
     """Extracts facts from the context that satisfy the given condition based on the query using OpenAI LLM."""
     user_prompt = prompts.USER_PROMPT_FACT_EXTRACTION.format(query=query, active_requirement=active_requirement, known_facts=known_facts, retrieved_documents=retrieved_documents)
+    sys_prompt = prompts.SYSTEM_PROMPT_FACT_EXTRACTION if getattr(config, "USE_VERIFICATION_CONSTRAINTS", True) else prompts.SYSTEM_PROMPT_FACT_EXTRACTION_NO_VERIFICATION
 
     try:
         client = configure_openai_client()
@@ -88,7 +89,7 @@ def openai_extract_facts(query: str, active_requirement: str, retrieved_document
         completion = client.chat.completions.create(
             model=llm_model_name,
             messages=[
-                {"role": "system", "content": prompts.SYSTEM_PROMPT_FACT_EXTRACTION},
+                {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": user_prompt}
             ]
         )

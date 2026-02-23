@@ -23,9 +23,9 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY') # For OpenAI
 VLLM_HOST = os.getenv('VLLM_HOST', "http://127.0.0.1")
 
 
-# --- PRV 统一模型：REAP-all-lora（DynamicRAG-8B + LoRA，规划/重排/校验同一模型）---
-# Default model and port for general RAG response generation
-VLLM_LLM_MODEL = os.getenv("VLLM_LLM_MODEL", "/home/lfy/projects/models/REAP-all-lora")
+# --- PRV 统一模型：需与 vLLM 实际加载的模型路径一致，否则会 404 ---
+# 常用：REAP-all-merged（LoRA 已合并）、或 REAP-all-lora
+VLLM_LLM_MODEL = os.getenv("VLLM_LLM_MODEL", "/home/lfy/projects/models/REAP-all-merged")
 VLLM_LLM_PORT = int(os.getenv("VLLM_LLM_PORT", 8000))
 
 # --- VLLM Dedicated Models Configuration ---
@@ -80,8 +80,15 @@ SHOW_RETRIEVED_CONTEXT = True  # Set to False to hide context printout
 # PRV 重排：召回后是否对 top-k 做模型动态选择与排序（再送入事实提取）
 USE_PRV_RERANK = os.getenv("USE_PRV_RERANK", "true").lower() == "true"
 
+# 消融：是否要求 FE 输出结构化证据与满足度标签（false 时仅产出自由文本结论，下游默认 DIRECT_ANSWER）
+USE_VERIFICATION_CONSTRAINTS = os.getenv("USE_VERIFICATION_CONSTRAINTS", "true").lower() == "true"
+
 # 评测时「仅从 ctxs 检索」使用的 E5 编码器路径（进程内排序，不依赖 E5 检索服务）
 E5_ENCODER_PATH = os.getenv("E5_ENCODER_PATH", "/home/lfy/projects/models/e5-large-v2")
+
+# 送入 LLM 的文档总字符数上限（避免超出上下文，如 LLaMA3-8B 约 8192 tokens，按 ~4 字符/token 预留约 24000 给文档，其余给 prompt/query）
+# 设为 0 表示不截断。滑动窗口（多段分别提取再合并）未实现，当前仅做「按顺序截断」。
+MAX_DOCUMENT_CHARS = int(os.getenv("MAX_DOCUMENT_CHARS", "24000"))
 
 # --- LLM Model Name (Set based on provider for generation) ---
 LLM_MODEL_NAME = None # Initialize

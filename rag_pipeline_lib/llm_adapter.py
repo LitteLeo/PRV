@@ -17,6 +17,7 @@ REAP框架中的LLM调用：
 5. generate_final_answer：答案合成（Synthesizer模块）
 """
 import sys
+import time
 import config
 from rag_pipeline_lib.llm_providers import vllm_utils, openai_utils
 from rag_pipeline_lib.pipeline import tracer_context
@@ -24,26 +25,25 @@ from functools import wraps
 
 def traceable_llm_call(func):
     """
-    装饰器：自动追踪LLM调用
-    
-    功能：为被装饰的函数自动记录输入和输出，用于调试和性能分析。
-    所有LLM调用函数都应使用此装饰器。
+    装饰器：自动追踪LLM调用，并记录单次调用耗时 duration_s（秒），用于 Latency 实验。
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
         tracer = tracer_context.get()
+        t0 = time.perf_counter()
         result = func(*args, **kwargs)
-        
-        # 如果有追踪器，记录此次LLM调用
+        duration_s = time.perf_counter() - t0
         if tracer:
             input_args = {key: value for key, value in kwargs.items()}
             arg_names = func.__code__.co_varnames[:func.__code__.co_argcount]
             for i, arg in enumerate(args):
-                input_args[arg_names[i]] = arg
+                if i < len(arg_names):
+                    input_args[arg_names[i]] = arg
             tracer.record_llm_call(
                 adapter_function_name=func.__name__,
                 inputs=input_args,
-                output=result
+                output=result,
+                duration_s=duration_s,
             )
         return result
     return wrapper
@@ -223,6 +223,40 @@ def generate_final_answer(query: str, facts: str) -> str:
         return openai_utils.openai_generate_final_answer(query, facts)
     else:
         raise ValueError(f"Unsupported AI_PROVIDER: {provider}. Cannot generate final answer.")
+
+
+@traceable_llm_call
+def generate_final_answer_fever(query: str, facts: str) -> str:
+    """
+    FEVER 专用答案合成：调用LLM将最终事实列表映射为 SUPPORTS / REFUTES / NOT ENOUGH INFO 三类标签之一。
+    
+    对应：synthesize_final_answer_fever
+    """
+    provider = config.AI_PROVIDER
+    print(f"LLM Adapter: Calling generate_final_answer_fever (AI Provider: {provider})")
+    if provider == 'vllm':
+        return vllm_utils.vllm_generate_final_answer_fever(query, facts)
+    elif provider == 'openai':
+        # 如需支持 openai，可在 openai_utils 中实现对应函数
+        raise ValueError("OpenAI provider is not yet supported for FEVER-specific final answer generation.")
+    else:
+        raise ValueError(f"Unsupported AI_PROVIDER: {provider}. Cannot generate FEVER final answer.")
+
+@traceable_llm_call
+def generate_final_answer_with_style(query: str, facts: str, style_hint: str) -> str:
+    """
+    带风格提示的答案合成：让 LLM 按短短一句 / 段落等风格输出。
+    用于 NQ / TriviaQA / PopQA / 2wikimqa / HotpotQA / ASQA / ELI5 等任务特化。
+    """
+    provider = config.AI_PROVIDER
+    print(f"LLM Adapter: Calling generate_final_answer_with_style (AI Provider: {provider}, style='{style_hint}')")
+    if provider == 'vllm':
+        return vllm_utils.vllm_generate_final_answer_with_style(query, facts, style_hint)
+    elif provider == 'openai':
+        # 如需支持 openai，可在 openai_utils 中实现对应函数
+        raise ValueError("OpenAI provider is not yet supported for style-specific final answer generation.")
+    else:
+        raise ValueError(f"Unsupported AI_PROVIDER: {provider}. Cannot generate styled final answer.")
 
 @traceable_llm_call
 def evaluate_answer(question: str, golden_answer: str, predicted_answer: str) -> str:
